@@ -10,7 +10,6 @@ BMPReader::~BMPReader()
 
 uint32_t BMPReader::MakeStrideAligned(uint32_t alignStride)
 {
-	// Add 1 to the row_stride until it is divisible with align_stride
 	uint32_t newStride = rowStride;
 	while (newStride % alignStride != 0)
 		newStride++;
