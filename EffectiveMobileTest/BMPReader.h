@@ -3,20 +3,27 @@
 #include <fstream>
 #include <string>
 #include <memory>
+//#include <vector>
 #include <Windows.h>
 
 class BMPReader
 {
 private:
-	HBITMAP hBitmap{NULL};
-	BITMAP qBitmap{NULL};
-	std::unique_ptr<BYTE[]> pBits;
+	BITMAPFILEHEADER bmpFileHeader{ NULL };
+	BITMAPINFOHEADER bmpInfoHeader{ NULL };
+
+	std::unique_ptr<BYTE[]> pixelData;
+
+	size_t pixelDataSize{ 0 };
 	int bytesPerPixel{ 0 };
+	uint32_t rowStride{ 0 };
+
+	uint32_t MakeStrideAligned(uint32_t alignStride);
 
 public:
 	BMPReader();
 	~BMPReader();
-	bool OpenBMP(const std::string& fileName);
+	void OpenBMP(const std::string& fileName);
 	void DisplayBMP();
 	void CloseBMP();
 };

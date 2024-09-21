@@ -8,36 +8,31 @@ BMPReader::~BMPReader()
 {
 }
 
-bool BMPReader::OpenBMP(const std::string& fileName)
+uint32_t BMPReader::MakeStrideAligned(uint32_t alignStride)
 {
-	std::wstring winstrFileName(fileName.begin(), fileName.end());
-	
-	hBitmap = (HBITMAP)LoadImage(NULL, (LPCWSTR)winstrFileName.c_str(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-	if (hBitmap == NULL) {
-		MessageBox(NULL, L"OpenBMP::LoadImage Failed.", L"Error", MB_ICONERROR);
-		return false;
-	}
+	// Add 1 to the row_stride until it is divisible with align_stride
+	uint32_t newStride = rowStride;
+	while (newStride % alignStride != 0)
+		newStride++;
 
-	if (!GetObject(hBitmap, sizeof(BITMAP), &qBitmap)) {
-		MessageBox(NULL, L"OpenBMP::GetObject Failed.", L"Error", MB_ICONERROR);
-		return false;
-	}
+	return newStride;
+}
 
-	HDC hdc = CreateCompatibleDC(NULL);
-	SelectObject(hdc, hBitmap);
+void BMPReader::OpenBMP(const std::string& fileName)
+{
+	std::ifstream file{ fileName, std::ios_base::binary };
+	if (!file.is_open())
+		throw std::runtime_error("Unable to open the input image file.");
 
-	// Set up the BITMAPINFO structure
-	BITMAPINFO bmpInfo;
-	SecureZeroMemory(&bmpInfo, sizeof(BITMAPINFO));
-	bmpInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	bmpInfo.bmiHeader.biWidth = qBitmap.bmWidth;
-	bmpInfo.bmiHeader.biHeight = qBitmap.bmHeight;
-	bmpInfo.bmiHeader.biPlanes = qBitmap.bmPlanes;
-	bmpInfo.bmiHeader.biBitCount = qBitmap.bmBitsPixel;
-	bmpInfo.bmiHeader.biCompression = BI_RGB;
+	file.read((char*)&bmpFileHeader, sizeof(BITMAPFILEHEADER));
+	if (bmpFileHeader.bfType != 0x4d42)
+		throw std::runtime_error("Unrecognized file format.");
 
+	file.read((char*)&bmpInfoHeader, sizeof(BITMAPINFOHEADER));
 
-	switch (bmpInfo.bmiHeader.biBitCount)
+	file.seekg(bmpFileHeader.bfOffBits, file.beg);
+
+	switch (bmpInfoHeader.biBitCount)
 	{
 	case 24:
 		bytesPerPixel = 3;
@@ -46,23 +41,34 @@ bool BMPReader::OpenBMP(const std::string& fileName)
 		bytesPerPixel = 4;
 		break;
 	default:
-		MessageBox(NULL, L"Only 24-bit and 32-bit BMP files are supported.", L"Error", MB_ICONERROR);
-		return false;
+		throw std::runtime_error("Only 24-bit and 32-bit .bmp files are supported.");
 	}
 
-	int size = qBitmap.bmWidth * qBitmap.bmHeight * bytesPerPixel;
-	pBits.reset(new BYTE[size]);
-
-
-	if (GetDIBits(hdc, hBitmap, 0, qBitmap.bmHeight, pBits.get(), &bmpInfo, DIB_RGB_COLORS) == NULL)
-	{
-		MessageBox(NULL, L"OpenBMP::GetDIBits Failed", L"Error", MB_ICONERROR);
-		return false;
+	if (bmpInfoHeader.biHeight < 0) {
+		throw std::runtime_error("The program can treat only BMP images with the origin in the bottom left corner!");
 	}
 
-	DeleteDC(hdc);
+	pixelDataSize = bmpInfoHeader.biWidth * bmpInfoHeader.biHeight * bmpInfoHeader.biBitCount / 8;
+	pixelData.reset(new BYTE[pixelDataSize]);
 
-	return true;
+	// Check if we need to take into account row padding
+	if (bmpInfoHeader.biWidth % 4 == 0) {
+		file.read((char*)pixelData.get(), pixelDataSize);
+		bmpFileHeader.bfSize += pixelDataSize;
+
+	}
+	else {
+		rowStride = bmpInfoHeader.biWidth * bmpInfoHeader.biBitCount / 8;
+		uint32_t newStride = MakeStrideAligned(4);
+		size_t paddingRowSize = newStride - rowStride;
+		auto paddingRow = std::make_unique<uint8_t[]>(newStride - rowStride);
+
+		for (int y = 0; y < bmpInfoHeader.biHeight; ++y) {
+			file.read((char*)(pixelData.get() + rowStride * y), rowStride);	// read data
+			file.read((char*)paddingRow.get(), paddingRowSize);	// skip padding row
+		}
+		bmpFileHeader.bfSize += pixelDataSize + bmpInfoHeader.biHeight * paddingRowSize;
+	}
 }
 
 void BMPReader::DisplayBMP()
@@ -72,16 +78,16 @@ void BMPReader::DisplayBMP()
 	LONG bkBlack = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY,	// set background to black and text to white
 		bkWhite = BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE | BACKGROUND_INTENSITY;		// set background to white; text will be black
 
-	for (int y = qBitmap.bmHeight - 1; y >= 0; --y)
+	for (int y = bmpInfoHeader.biHeight - 1; y >= 0; --y)
 	{
-		for (int x = 0; x < qBitmap.bmWidth; ++x)
+		for (int x = 0; x < bmpInfoHeader.biWidth; ++x)
 		{
-			auto index = qBitmap.bmWidth * y * bytesPerPixel + x * bytesPerPixel;
+			auto index = bmpInfoHeader.biWidth * y * bytesPerPixel + x * bytesPerPixel;
 
-			BYTE blue = pBits[index];
-			BYTE green = pBits[index + 1];
-			BYTE red = pBits[index + 2];
-			LONG color = (red<<16) | (green<<8) | (blue);
+			BYTE blue = pixelData[index];
+			BYTE green = pixelData[index + 1];
+			BYTE red = pixelData[index + 2];
+			LONG color = (red << 16) | (green << 8) | (blue);
 			// alpha channel is not processed
 
 			if (color > 0x007f7f7f)
@@ -97,15 +103,12 @@ void BMPReader::DisplayBMP()
 	SetConsoleTextAttribute(stdOut, bkBlack);
 }
 
-
 void BMPReader::CloseBMP()
 {
-	if (hBitmap != NULL)
-	{
-		DeleteObject(hBitmap);
-		hBitmap = NULL;
-	}
-	SecureZeroMemory(&qBitmap, sizeof(BITMAP));
-	pBits.reset();
+	SecureZeroMemory(&bmpFileHeader, sizeof(BITMAPFILEHEADER));
+	SecureZeroMemory(&bmpInfoHeader, sizeof(BITMAPINFOHEADER));
+	pixelData.reset();
+	pixelDataSize = 0;
 	bytesPerPixel = 0;
+	rowStride = 0;
 }
