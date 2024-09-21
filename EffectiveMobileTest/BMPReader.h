@@ -3,7 +3,6 @@
 #include <fstream>
 #include <string>
 #include <memory>
-//#include <vector>
 #include <Windows.h>
 
 class BMPReader
